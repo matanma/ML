@@ -1,0 +1,63 @@
+Navot's words counts: 
+vectorizer = CountVectorizer(vocabulary = kws)
+X = vectorizer.fit_transform(corpus).toarray()
+
+Precision recall curve: 
+from sklearn.metrics import precision_recall_curve
+p, r, thresholds = precision_recall_curve(y_test, lr_probs)
+plt.plot(p,r)
+
+parsing dates:
+from dateutil.parser import parse
+open_close_dates_df['Date/Time Opened'].apply(lambda d : parse(d) if isinstance(d, str) else d)
+
+plotly - export graph to html: 
+import plotly.express as px
+
+import pandas as pd
+df = pd.read_csv('https://raw.githubusercontent.com/plotly/datasets/master/finance-charts-apple.csv')
+
+fig = px.line(df, x='Date', y='AAPL.High')
+fig.write_html("/Users/mmandelbrod/Documents/plotly_test.html")
+fig.show()
+
+#Connecting to a remote server using python, and executing commands there: 
+client = paramiko.SSHClient()
+client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.connect(hostname='<hostname>', username=<user_name>, password=<password>, look_for_keys=False)
+
+#Executing on the server:
+algorithm_current_params = algorithm_params.format(use_tags = use_tags, 
+        tags_fn=tags_fn, 
+        simple_bind=simple_bind, 
+        before_reply_info=before_reply_info, 
+        before_write_general=before_write_general, 
+        before_change_summary=before_change_summary, 
+        after_declare_work = after_declare_work, 
+        before_next_write = before_next_write)
+spark_submit_run_string = spark_submit_format.format(scriptPath=script_path, fromDate=from_date, toDate=to_date, account=account, algorithm_params=algorithm_current_params)
+
+stdin, stdout, stderr = client.exec_command(
+    spark_submit_run_string,
+    timeout=9999999)
+ssh_output = stdout.read().decode('UTF-8')
+ssh_error = stderr.read().decode('UTF-8')
+
+print('output: ' + ssh_output)
+print('Error: ' + ssh_error)
+
+#Extracting the file from hdfs to the server
+stdin, stdout, stderr = client.exec_command(hadoop_get_merge_format.format(user_name=user_name,file_name=work_periods_file_name),
+                                            timeout=9999999)
+ssh_output = stdout.read().decode('UTF-8')
+ssh_error = stderr.read().decode('UTF-8')
+
+print('output: ' + ssh_output)
+print('Error: ' + ssh_error)
+
+#Downloading to local 
+download_remote_file_path = '{file_name}.txt'.format(file_name=work_periods_file_name)
+download_local_file_path = '{file_name}.txt'.format(file_name=work_periods_file_name)
+ftp_client = client.open_sftp()
+ftp_client.get(download_remote_file_path, download_local_file_path)
+ftp_client.close()
