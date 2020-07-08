@@ -31,14 +31,17 @@ import xgboost as xgb
 class EbayPricingDemo():
     pricing_strategies = ['static', 'adjust_by_stds']
 
-    def __init__(self, products_filepath, num_consumers, commision_ratio):
+    def __init__(self, products_filepath, num_consumers, commision_ratio, propensity_range_max = 5):
         self.product_names, self.avg_product_prices, self.products_stds = self.load_product_prices(products_filepath)
         self.commision_ratio = commision_ratio
         self.propensity_purchase_distribution = self.init_propensity_purchase_distribution()
         self.base_pricing_matrix = self.init_pricing_matrix(self.avg_product_prices, num_consumers)
-        self.gains_array = self.init_gains_array(self.products_stds, self.propensity_purchase_distribution)
-        self.propensity_matrix = np.zeros(self.pricing_matrix.shape)
         self.dynamic_pricing_matrix = np.copy(self.base_pricing_matrix)
+        # self.gains_array = self.init_gains_array(self.products_stds, self.propensity_purchase_distribution)
+        #Initially, the propensity of any consumer to by any product is neutral.
+        self.propensity_matrix = np.ones(self.base_pricing_matrix.shape, dtype=int)*(propensity_range_max//2 + 1)
+        self.dynamic_probs = np.zeros(self.base_pricing_matrix.shape)
+
 
 
     def  load_product_prices(self, products_filepath="mercari-price-suggestion-challenge/train_small.csv"):
@@ -52,7 +55,7 @@ class EbayPricingDemo():
 
     #Initially - have all consumer prices identical
     def init_pricing_matrix(self, avg_product_prices, num_consumers):
-        return avg_product_prices[:, np.newaxis].dot(np.ones(num_consumers))
+        return avg_product_prices[:, np.newaxis].dot(np.ones(num_consumers)[ np.newaxis, :])
 
     # def init_gains_array(self, products_stds, propensity_purchase_distribution):
     #     gains_array = np.zeros((propensity_purchase_distribution.shape[0], *products_stds.shape))
@@ -61,30 +64,46 @@ class EbayPricingDemo():
 
 
     def update_pricing(self, pricing_strategy):
+        nproducts, nconsumers = self.base_pricing_matrix.shape
         if pricing_strategy == 'static':
-            return
+            for i in np.arange(nproducts):
+                for j in np.arange(nconsumers):
+                    #The purchase probability is the propensity induced probability for purchasing when the price is the average one.
+                    self.dynamic_probs[i,j] = self.propensity_purchase_distribution[self.propensity_purchase_distribution.shape[0]//2, self.propensity_matrix[i,j] -1 ]
         elif pricing_strategy == 'adjust_by_stds':
             stds_coefs = np.array([-2, -1, 0, 1, 2])
-            nproducts, nconsumers = self.pricing_matrix
+
             for i in np.arange(nproducts):
                 for j in np.arange(nconsumers):
                     #Todo - try to have this more efficient (see https://stackoverflow.com/questions/41164305/numpy-dot-product-with-max-instead-of-sum)
-                    self.dynamic_pricing_matrix[i,j] = np.max(self.base_pricing_matrix[i,j]*self.propensity_purchase_distribution[:, self.propensity_matrix[i,j] -1 ]*\
-                                                              (1+self.products_stds[i]*stds_coefs))
+                    purchase_distribution_vec = self.propensity_purchase_distribution[:, self.propensity_matrix[i,j] -1 ]
+                    prices_plus_stds_vec =  self.base_pricing_matrix[i,j]+self.products_stds[i]*stds_coefs #TODO: This should be calculated offline (ndarray)
+                    max_rev_index = np.argmax(purchase_distribution_vec * prices_plus_stds_vec)
+                    self.dynamic_pricing_matrix[i,j] = prices_plus_stds_vec[max_rev_index]
+                    self.dynamic_probs[i,j] = purchase_distribution_vec[max_rev_index]
         else:
             raise Exception("We don't support pricing strategy {}".format(pricing_strategy))
 
 
     def perform_sells(self):
-        bought_indices = np.random.uniform(size = self.dynamic_pricing_matrix.size) < self.dynamic_probs
-        return self.commision_ratio*self.dynamic_pricing_matrix[bought_indices]
+        bought_indices = np.random.uniform(size = self.dynamic_pricing_matrix.shape) < self.dynamic_probs
+        ebay_revenue =  self.commision_ratio*self.dynamic_pricing_matrix[bought_indices].sum()
+
+        print("performed sells: {}".format(self.dynamic_pricing_matrix[bought_indices]))
+        print("pricing matrix:")
+        print(self.dynamic_pricing_matrix)
+        print("dynamic probs:")
+        print(self.dynamic_probs)
+        return ebay_revenue
 
     def run_dynamics(self, time_horizon, time_step, pricing_strategy ):
         total_revenue = 0
         for t in np.arange(0, time_horizon, time_step):
+            print(f"############ day{t} #############")
             self.update_pricing(pricing_strategy)
             curr_revenue = self.perform_sells()
             total_revenue += curr_revenue
+            print("#" * 40)
         return total_revenue
 
 
