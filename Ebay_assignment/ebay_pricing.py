@@ -4,35 +4,18 @@ import pandas as pd
 import argparse
 import sys, os
 import scipy
-import sklearn
-from sklearn.linear_model import LinearRegression
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder
-from pandas_summary import DataFrameSummary
-import pandas_profiling as pp
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LogisticRegressionCV, LogisticRegression
-from sklearn import preprocessing
-from sklearn.metrics import classification_report, confusion_matrix
-from sklearn.model_selection import train_test_split
-import random
-from sklearn.svm import SVC
-from sklearn.model_selection import GridSearchCV
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.tree import DecisionTreeClassifier
-import plotly.graph_objs as go
-from plotly.offline import iplot, init_notebook_mode
-init_notebook_mode(connected=True)
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import f1_score
-import xgboost as xgb
-# %matplotlib inline
+
+
 
 
 def calc_theta_score(theta_vec, X, Y, R,  num_consumers, num_features, regularization_lambda ):
     theta = theta_vec.reshape( num_consumers, num_features)
     j_theta = 1 / 2 * (((X.dot(theta.T)-Y)*R)**2).sum() + regularization_lambda/2*(theta**2).sum()
-    print( j_theta )
     return j_theta
 
 def calc_theta_grad(theta_vec, X, Y, R,  num_consumers, num_features, regularization_lambda ):
@@ -44,23 +27,21 @@ class EbayPricingDemo():
     pricing_strategies = ['static', 'adjust_by_stds']
 
     def __init__(self, products_filepath, num_consumers, commision_ratio, propensity_range = (0,5), initial_density = 0.35):
-        self.product_names, self.avg_product_prices, self.products_stds, self.products_features = self.load_product_prices_and_features(products_filepath)
 
+        self.product_names, self.avg_product_prices, self.products_stds, self.products_features = self.load_product_prices_and_features(products_filepath)
         self.propensity_range = propensity_range
         self.commision_ratio = commision_ratio
         self.propensity_purchase_distribution = self.init_propensity_purchase_distribution()
         self.base_pricing_matrix = self.init_pricing_matrix(self.avg_product_prices, num_consumers)
         self.dynamic_pricing_matrix = np.copy(self.base_pricing_matrix)
-        # self.gains_array = self.init_gains_array(self.products_stds, self.propensity_purchase_distribution)
-        #Initially, the propensity of any consumer to by any product is neutral.
         self.propensity_matrix = self.init_propensity_matrix(initial_density, self.base_pricing_matrix.shape )
         self.dynamic_probs = np.zeros(self.base_pricing_matrix.shape)
 
 
 
     def  load_product_prices_and_features(self, products_filepath="mercari-price-suggestion-challenge/train_small.csv"):
-        raw_data_df = pd.read_csv(products_filepath, sep=',' )
-
+        extension = products_filepath.split(".")[-1]
+        raw_data_df = pd.read_csv(products_filepath, sep=',' if extension == "csv" else "\t" )
         #Extract some features.
         def split_cat(text):
             try:
@@ -81,25 +62,18 @@ class EbayPricingDemo():
         for name_ship, df in raw_data_df.groupby(["category_name", 'shipping']):
             tmp.loc[name_ship, 'stds'] = max(1, df['price'].std())
         stds_vec = tmp.set_index('train_id')['stds'].values
+        return raw_data_df['name'].values, raw_data_df['price'], stds_vec, products_features
 
-
-
-        return raw_data_df['name'].values, raw_data_df['price'], stds_vec, products_features #!!! TODO: extract stds from actual prices.
 
     #Returns a matrix in which column j is the probability distribution corresponding to propencity j (in ascending order)
-    def init_propensity_purchase_distribution(kernel = np.arange(5,0,-1)/100, generation_method = 'exp'):
+    def init_propensity_purchase_distribution(kernel = np.arange(5,0,-1)/100):
         kernel = np.arange(5, 0, -1) / 100
         return kernel[:, np.newaxis].dot(np.arange(0, 6)[np.newaxis, :])
+
 
     #Initially - have all consumer prices identical
     def init_pricing_matrix(self, avg_product_prices, num_consumers):
         return avg_product_prices[:, np.newaxis].dot(np.ones(num_consumers)[ np.newaxis, :])
-
-    # def init_gains_array(self, products_stds, propensity_purchase_distribution):
-    #     gains_array = np.zeros((propensity_purchase_distribution.shape[0], *products_stds.shape))
-    #     for i in [-2, -1 ,0, 1, 2]:
-    #         stds_mat =
-
 
 
     def perform_conent_based_filtering(self, products_features, known_propensity_matrix):
@@ -119,8 +93,11 @@ class EbayPricingDemo():
                                                  )
         regression_theta_mat = optimal_theta.x.reshape(*(theta_initial.shape))
         regressed_propensity_matrix = products_features.dot(regression_theta_mat.T) + y_mean
-        
-        return np.ceil(regressed_propensity_matrix).astype(int)
+        regressed_propensity_matrix_int = np.ceil(regressed_propensity_matrix).astype(int)
+        #Amend regression noises
+        regressed_propensity_matrix_int[regressed_propensity_matrix_int < self.propensity_range[0]] = self.propensity_range[0]
+        regressed_propensity_matrix_int[regressed_propensity_matrix_int > self.propensity_range[-1]] =  self.propensity_range[-1]
+        return regressed_propensity_matrix_int
 
 
 
@@ -128,9 +105,8 @@ class EbayPricingDemo():
         S = scipy.sparse.random(*shape, density=initial_density)
         # Initialize the propensity matrix to contain initial_density entries in the propensity_range, and the others set to -1
         self.known_propensity_matrix =  np.ceil(S.A*(self.propensity_range[-1]+1)).astype(int) - 1
-
         #Perform content based filtering to estimate the empty entries.
-        self.propensity_matrix = self.perform_conent_based_filtering(self.products_features, self.known_propensity_matrix)
+        return self.perform_conent_based_filtering(self.products_features, self.known_propensity_matrix)
 
 
     def update_pricing(self, pricing_strategy):
@@ -139,15 +115,14 @@ class EbayPricingDemo():
             for i in np.arange(nproducts):
                 for j in np.arange(nconsumers):
                     #The purchase probability is the propensity induced probability for purchasing when the price is the average one.
-                    self.dynamic_probs[i,j] = self.propensity_purchase_distribution[self.propensity_purchase_distribution.shape[0]//2, self.propensity_matrix[i,j] -1 ]
+                    self.dynamic_probs[i,j] = self.propensity_purchase_distribution[self.propensity_purchase_distribution.shape[0]//2 , self.propensity_matrix[i,j] ]
         elif pricing_strategy == 'adjust_by_stds':
             stds_coefs = np.array([-2, -1, 0, 1, 2])
-
             for i in np.arange(nproducts):
                 for j in np.arange(nconsumers):
                     #Todo - try to have this more efficient (see https://stackoverflow.com/questions/41164305/numpy-dot-product-with-max-instead-of-sum)
-                    purchase_distribution_vec = self.propensity_purchase_distribution[:, self.propensity_matrix[i,j] -1 ]
-                    prices_plus_stds_vec =  self.base_pricing_matrix[i,j]+self.products_stds[i]*stds_coefs #TODO: This should be calculated offline (ndarray)
+                    purchase_distribution_vec = self.propensity_purchase_distribution[:, self.propensity_matrix[i,j]  ]
+                    prices_plus_stds_vec =  self.base_pricing_matrix[i,j] + self.products_stds[i]*stds_coefs #TODO: This should be calculated offline (ndarray)
                     max_rev_index = np.argmax(purchase_distribution_vec * prices_plus_stds_vec)
                     self.dynamic_pricing_matrix[i,j] = prices_plus_stds_vec[max_rev_index]
                     self.dynamic_probs[i,j] = purchase_distribution_vec[max_rev_index]
@@ -159,25 +134,34 @@ class EbayPricingDemo():
         bought_indices = np.random.uniform(size = self.dynamic_pricing_matrix.shape) < self.dynamic_probs
         ebay_revenue =  self.commision_ratio*self.dynamic_pricing_matrix[bought_indices].sum()
 
-        print("performed sells: {}".format(self.dynamic_pricing_matrix[bought_indices]))
+        # print("performed sells: {}".format(self.dynamic_pricing_matrix[bought_indices]))
         print("sum sells: {}".format(self.dynamic_pricing_matrix[bought_indices].sum()))
-        print("pricing matrix:")
-        print(self.dynamic_pricing_matrix)
-        print("dynamic probs:")
-        print(self.dynamic_probs)
+        # print("pricing matrix:")
+        # print(self.dynamic_pricing_matrix)
+        # print("dynamic probs:")
+        # print(self.dynamic_probs)
         return ebay_revenue
 
-    def run_dynamics(self, time_horizon, time_step, pricing_strategy ):
-        total_revenue = 0
-        for t in np.arange(0, time_horizon, time_step):
-            print(f"############ day{t} #############")
-            self.update_pricing(pricing_strategy)
-            curr_revenue = self.perform_sells()
-            total_revenue += curr_revenue
-            print("#" * 40)
-        return total_revenue
+    def run_dynamics(self, time_horizon, time_step, pricing_strategies ):
+        timestamps = np.arange(0, time_horizon, time_step)
+        daily_sells = pd.DataFrame({}, columns=pricing_strategies, index = timestamps)
+        for pricing_strategy in pricing_strategies:
+            print(f"############ applying strategy {pricing_strategy} #############")
+            for t in timestamps:
+                print(f"############ day{t} #############")
+                self.update_pricing(pricing_strategy)
+                curr_revenue = self.perform_sells()
+                daily_sells.loc[t, pricing_strategy] = curr_revenue
+                print("#" * 40)
+        daily_sells.cumsum().plot()
+        plt.title("Ebay's cumulative revenues (US$)")
+        plt.xlabel("Day")
+        plt.ylabel("Revenue")
 
-
+        plt.show(block=False)
+        input("Hit Enter To Close")
+        plt.close()
+        return daily_sells.sum().values
 
 
 
@@ -191,14 +175,14 @@ def main(args):
                         help="The fraction of the propensity matrix entries for which we initially have knowledge of. ")
     parser.add_argument('--horizon', dest="time_horizon_in_days", default=365, help="The examined overall period in days.")
     parser.add_argument('-t', dest="timestep_in_days", default=1, help="timestep in days")
-    parser.add_argument('--pricing-strategy', dest="pricing_strategy", choices = EbayPricingDemo.pricing_strategies,
+    parser.add_argument('--pricing-strategy', dest="pricing_strategy", choices = EbayPricingDemo.pricing_strategies, nargs='+',
                         default="static", help="The priding strategy to use in the simulation.")
 
 
 
 
     options = parser.parse_args(args)
-    products_filepath =  os.path.expanduser(options.products_filepath)
+    products_filepath = os.path.expanduser(options.products_filepath)
     if not os.path.exists(products_filepath):
         raise Exception("Couldn't find products filepath (-i options) {}".format(products_filepath))
     num_consumers = int( options.num_consumers)
@@ -207,27 +191,25 @@ def main(args):
     commission_ratio = options.commission_ratio
     if (commission_ratio <= 0) or (commission_ratio >= 1):
         raise Exception("The commission ratio should be greater than 0 and less than 1. I've received {}".format(commission_ratio))
-
     time_horizon_in_days = int(options.time_horizon_in_days)
+    if time_horizon_in_days < 1:
+        raise Exception(
+            "The time_horizon_in_days should be at least 1 day. I've received {}".format(time_horizon_in_days))
     timestep_in_days = int(options.timestep_in_days)
     if timestep_in_days < 1:
         raise Exception(
             "The timestep should be at least 1 day. I've received {}".format(timestep_in_days))
-
     initial_density = float(options.initial_density)
     if (initial_density <= 0.05) or (initial_density > 1):
         raise Exception(
             "The initial_density should be at 0.05 and at most 1. I've received {}".format(initial_density))
-
-    pricing_strategy = options.pricing_strategy
-
+    pricing_strategies = options.pricing_strategy
     pricing_demo = EbayPricingDemo( products_filepath, num_consumers, commission_ratio, initial_density = initial_density)
-    accumulated_revenues = pricing_demo.run_dynamics( time_horizon_in_days, timestep_in_days, pricing_strategy)
-    print("Accumulated revenues for pricing strategy {}: {}".format(pricing_strategy, accumulated_revenues))
+    accumulated_revenues = pricing_demo.run_dynamics( time_horizon_in_days, timestep_in_days, pricing_strategies)
+    print("Accumulated revenues for pricing strategy {}: {}".format(pricing_strategies, accumulated_revenues))
 
 
 if __name__ == "__main__":
     main(sys.argv[1:])
 
 
-##TODO: beautify code to resemble Java.
